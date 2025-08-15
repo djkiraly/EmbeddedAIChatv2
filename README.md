@@ -71,8 +71,8 @@ chmod +x install.sh uninstall.sh update.sh
 **What gets installed:**
 - ✅ Node.js 20+ and all system dependencies
 - ✅ Complete application with production build
-- ✅ Systemd services for auto-start and management
-- ✅ Nginx reverse proxy configuration
+- ✅ Backend systemd service for auto-start and management
+- ✅ Nginx static file serving + API proxy configuration
 - ✅ SQLite database with proper schema
 - ✅ Security hardening and firewall setup
 - ✅ Log rotation and monitoring
@@ -95,20 +95,38 @@ ai-chat-manager status
 ```
 
 **Management commands:**
-- `ai-chat-manager start` - Start all services
-- `ai-chat-manager stop` - Stop all services  
-- `ai-chat-manager restart` - Restart all services
+- `ai-chat-manager start` - Start backend and nginx services
+- `ai-chat-manager stop` - Stop backend (nginx continues serving static files)
+- `ai-chat-manager restart` - Restart backend and nginx services
 - `ai-chat-manager status` - Check service status
 - `ai-chat-manager logs backend` - View backend logs
-- `ai-chat-manager logs frontend` - View frontend logs
 - `ai-chat-manager logs nginx` - View nginx logs
-- `ai-chat-manager update` - Update application from git
+- `ai-chat-manager update` - Update application from git and redeploy
 
 **Service files:**
 - Backend: `/etc/systemd/system/ai-chat-backend.service`
-- Frontend: `/etc/systemd/system/ai-chat-frontend.service`
+- Frontend: Static files served by nginx from `/var/www/html`
 - Config: `/opt/ai-chat-interface/backend/.env`
 - Logs: `/opt/ai-chat-interface/logs/`
+- Web Files: `/var/www/html/` (React build output)
+
+**Quick Reference:**
+```bash
+# Installation
+curl -fsSL https://raw.githubusercontent.com/djkiraly/EmbeddedAIChatv2/main/install.sh | bash
+
+# Service Management
+ai-chat-manager start|stop|restart|status
+ai-chat-manager logs backend|nginx
+ai-chat-manager update
+
+# File Locations
+Frontend:     /var/www/html/
+Backend:      /opt/ai-chat-interface/
+Config:       /opt/ai-chat-interface/backend/.env
+Database:     /opt/ai-chat-interface/data/database.sqlite
+Logs:         /opt/ai-chat-interface/logs/
+```
 
 **Complete deployment documentation:** See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed Linux deployment guide, troubleshooting, and advanced configuration.
 
@@ -134,16 +152,25 @@ Port 3000      ←→    Port 5000      ←→     SQLite
 
 ### Production Deployment
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│     Nginx       │    │    Frontend     │    │    Backend      │
-│   (Port 80)     │───▶│   (Port 3000)   │───▶│   (Port 5000)   │
-│  Reverse Proxy  │    │   React App     │    │   Express API   │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                                        │
-                                               ┌─────────────────┐
-                                               │   SQLite DB     │
-                                               │   (Database)    │
-                                               └─────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                         Nginx (Port 80)                     │
+│  ┌─────────────────────┐    ┌─────────────────────────────┐ │
+│  │   Static Files      │    │       API Proxy             │ │
+│  │   /var/www/html     │    │    /api/* → localhost:5000  │ │
+│  │   (React Build)     │    │                             │ │
+│  └─────────────────────┘    └─────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+                                       │
+                              ┌─────────────────┐
+                              │    Backend      │
+                              │   (Port 5000)   │
+                              │   Express API   │
+                              └─────────────────┘
+                                       │
+                              ┌─────────────────┐
+                              │   SQLite DB     │
+                              │   (Database)    │
+                              └─────────────────┘
 ```
 
 ## 🛠️ Development
@@ -172,10 +199,10 @@ npm run install:all    # Install all dependencies
 
 **Production Management (Linux):**
 ```bash
-ai-chat-manager start/stop/restart  # Service control
+ai-chat-manager start/stop/restart  # Backend and nginx control
 ai-chat-manager status              # Service status
-ai-chat-manager logs [service]      # View logs
-ai-chat-manager update              # Update application
+ai-chat-manager logs [backend|nginx] # View logs
+ai-chat-manager update              # Update and redeploy application
 ```
 
 ### Environment Configuration
@@ -207,8 +234,10 @@ LOG_FILE=./logs/backend.log
 
 **Frontend** (`.env.local`):
 ```env
-# API Configuration
+# API Configuration (Development)
 REACT_APP_API_URL=http://localhost:5000/api
+
+# Production builds use: REACT_APP_API_URL=http://localhost/api
 ```
 
 ## 🎨 Features in Detail
@@ -252,11 +281,30 @@ REACT_APP_API_URL=http://localhost:5000/api
 
 ### Production
 - Dedicated service user (`aichat`)
-- Systemd security features
-- Nginx reverse proxy with security headers
+- Systemd security features  
+- Nginx static file serving with security headers
+- API proxy with CORS protection
 - Firewall configuration
 - Log rotation and monitoring
 - Automatic security updates
+
+### Deployment Architecture
+**Frontend**: React build files served directly by nginx from `/var/www/html`
+- Static asset caching with long expiration times
+- Gzip compression for optimal transfer
+- Security headers (XSS protection, CSRF protection, etc.)
+- SPA routing support with `try_files` directive
+
+**Backend**: Node.js Express API server
+- Systemd service management
+- Process isolation and security restrictions
+- Automatic restart on failure
+- Structured logging to files
+
+**Database**: SQLite with proper permissions
+- Data directory: `/opt/ai-chat-interface/data/`
+- Automatic schema initialization
+- Regular backup capabilities
 
 ## 🚨 Troubleshooting
 
@@ -283,10 +331,89 @@ sudo -u aichat bash -c "cd /opt/ai-chat-interface/backend && npm run init-db"
 sudo systemctl start ai-chat-backend
 ```
 
+**Frontend not loading (Production):**
+```bash
+# Check if static files exist
+ls -la /var/www/html/
+
+# Verify nginx is serving files
+curl -I http://localhost
+
+# Rebuild and redeploy frontend
+cd /opt/ai-chat-interface
+sudo -u aichat npm run build
+sudo rm -rf /var/www/html/*
+sudo cp -r frontend/build/* /var/www/html/
+sudo chown -R www-data:www-data /var/www/html
+sudo systemctl restart nginx
+```
+
+**API connection issues:**
+```bash
+# Check backend service status
+ai-chat-manager status
+
+# Test API directly
+curl http://localhost/api/health
+
+# Check nginx proxy configuration
+sudo nginx -t
+sudo systemctl reload nginx
+
+# Verify backend is running on correct port
+sudo netstat -tlnp | grep :5000
+```
+
+**Permission issues:**
+```bash
+# Fix web directory permissions
+sudo chown -R www-data:www-data /var/www/html
+sudo chmod -R 755 /var/www/html
+sudo find /var/www/html -type f -exec chmod 644 {} \;
+
+# Fix application directory permissions
+sudo chown -R aichat:aichat /opt/ai-chat-interface
+```
+
+**Nginx configuration issues:**
+```bash
+# Test nginx configuration
+sudo nginx -t
+
+# Check nginx error logs
+sudo tail -f /opt/ai-chat-interface/logs/nginx-error.log
+
+# Restart nginx
+sudo systemctl restart nginx
+
+# Check if nginx is listening on port 80
+sudo netstat -tlnp | grep :80
+```
+
 **API key issues:**
-- Verify keys are correctly set in `.env`
+- Verify keys are correctly set in `/opt/ai-chat-interface/backend/.env`
 - Check API key format and permissions
 - Use the settings panel to test keys
+- Restart backend after changing keys: `ai-chat-manager restart`
+
+**Update/deployment issues:**
+```bash
+# Manual update process
+cd /opt/ai-chat-interface
+sudo systemctl stop ai-chat-backend
+sudo -u aichat git pull
+sudo -u aichat npm run install:all
+sudo -u aichat npm run build
+
+# Redeploy frontend
+sudo rm -rf /var/www/html/*
+sudo cp -r frontend/build/* /var/www/html/
+sudo chown -R www-data:www-data /var/www/html
+
+# Restart services
+sudo systemctl start ai-chat-backend
+sudo systemctl restart nginx
+```
 
 **Linux deployment issues:**
 See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive troubleshooting.
@@ -300,10 +427,17 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive troubleshooting.
 - Consider model switching based on requirements
 
 ### Production Scaling
-- Nginx load balancing for multiple instances
+- Nginx static file caching and compression
+- Backend API load balancing for multiple instances
 - Database optimization and backups
 - Monitoring and alerting setup
 - Resource management and limits
+
+### Architecture Benefits
+- **Faster Static Files**: Nginx serves React build files directly (no Node.js overhead)
+- **Better Caching**: Nginx handles static asset caching efficiently
+- **Reduced Memory**: Only backend Node.js process runs (frontend served statically)
+- **Improved Security**: Security headers and CORS handling at nginx level
 
 ## 🤝 Contributing
 

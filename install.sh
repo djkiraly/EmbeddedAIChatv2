@@ -108,12 +108,12 @@ install_system_deps() {
     case $DISTRO in
         ubuntu|debian)
             sudo apt-get update
-            sudo apt-get install -y curl wget git build-essential python3 sqlite3 nginx
+            sudo apt-get install -y curl wget git build-essential python3 sqlite3 nginx unzip
             ;;
         centos|rhel|fedora)
             sudo dnf update -y || sudo yum update -y
-            sudo dnf install -y curl wget git gcc-c++ make python3 sqlite nginx || \
-            sudo yum install -y curl wget git gcc-c++ make python3 sqlite nginx
+            sudo dnf install -y curl wget git gcc-c++ make python3 sqlite nginx unzip || \
+            sudo yum install -y curl wget git gcc-c++ make python3 sqlite nginx unzip
             ;;
         *)
             print_warning "Unknown distribution, skipping system dependencies"
@@ -168,19 +168,102 @@ setup_app_directory() {
     TEMP_DIR=$(mktemp -d)
     print_status "Using temporary directory: ${TEMP_DIR}"
     
-    # Clone the correct repository
-    # First try the main branch explicitly
-    if cd ${TEMP_DIR} && git clone --branch main --single-branch https://github.com/djkiraly/EmbeddedAIChatv2.git repo 2>/dev/null; then
-        print_status "Successfully cloned main branch"
-    elif cd ${TEMP_DIR} && git clone --branch master --single-branch https://github.com/djkiraly/EmbeddedAIChatv2.git repo 2>/dev/null; then
-        print_status "Successfully cloned master branch (main failed)"
-    elif cd ${TEMP_DIR} && git clone https://github.com/djkiraly/EmbeddedAIChatv2.git repo; then
-        print_status "Successfully cloned default branch (both main and master failed)"
+    # Configure git to be more robust
+    git config --global http.postBuffer 524288000
+    git config --global http.maxRequestBuffer 100M
+    git config --global core.compression 0
+    
+    # Clone the correct repository with progressive fallback methods
+    REPO_URL="https://github.com/djkiraly/EmbeddedAIChatv2.git"
+    CLONE_SUCCESS=false
+    
+    # Method 1: Try shallow clone first (faster, less prone to fetch-pack issues)
+    print_status "Attempting shallow clone..."
+    if cd ${TEMP_DIR} && git clone --depth 1 ${REPO_URL} repo 2>/dev/null; then
+        print_status "Shallow clone successful"
+        CLONE_SUCCESS=true
     else
-        print_error "All git clone attempts failed"
+        print_warning "Shallow clone failed, trying full clone..."
+        
+        # Method 2: Full clone without single-branch restriction
+        print_status "Attempting full clone..."
+        if cd ${TEMP_DIR} && git clone ${REPO_URL} repo 2>/dev/null; then
+            print_status "Full clone successful"
+            CLONE_SUCCESS=true
+        else
+            print_warning "Full clone failed, trying with verbose output..."
+            
+            # Method 3: Clone with verbose output for debugging
+            print_status "Attempting clone with debugging..."
+            if cd ${TEMP_DIR} && git clone --verbose --progress ${REPO_URL} repo; then
+                print_status "Clone with debugging successful"
+                CLONE_SUCCESS=true
+            else
+                print_warning "Git clone failed, trying ZIP download fallback..."
+                
+                # Method 4: Download ZIP file as fallback
+                print_status "Downloading repository as ZIP file..."
+                if command -v wget >/dev/null 2>&1; then
+                    if wget -q https://github.com/djkiraly/EmbeddedAIChatv2/archive/refs/heads/main.zip -O repo.zip; then
+                        print_status "ZIP download successful, extracting..."
+                        if command -v unzip >/dev/null 2>&1; then
+                            if unzip -q repo.zip && mv EmbeddedAIChatv2-main repo; then
+                                print_status "ZIP extraction successful"
+                                CLONE_SUCCESS=true
+                                rm -f repo.zip
+                            else
+                                print_error "ZIP extraction failed"
+                            fi
+                        else
+                            print_error "unzip command not available"
+                        fi
+                    else
+                        print_error "ZIP download failed"
+                    fi
+                elif command -v curl >/dev/null 2>&1; then
+                    if curl -sL https://github.com/djkiraly/EmbeddedAIChatv2/archive/refs/heads/main.zip -o repo.zip; then
+                        print_status "ZIP download successful, extracting..."
+                        if command -v unzip >/dev/null 2>&1; then
+                            if unzip -q repo.zip && mv EmbeddedAIChatv2-main repo; then
+                                print_status "ZIP extraction successful"
+                                CLONE_SUCCESS=true
+                                rm -f repo.zip
+                            else
+                                print_error "ZIP extraction failed"
+                            fi
+                        else
+                            print_error "unzip command not available"
+                        fi
+                    else
+                        print_error "ZIP download failed"
+                    fi
+                else
+                    print_error "Neither wget nor curl available for ZIP download"
+                fi
+                
+                if [[ "$CLONE_SUCCESS" != "true" ]]; then
+                    print_error "All download methods failed. Check network connectivity and repository access."
+                    print_status "Manual installation required:"
+                    print_status "1. Download: https://github.com/djkiraly/EmbeddedAIChatv2/archive/refs/heads/main.zip"
+                    print_status "2. Extract to ${APP_DIR}"
+                    print_status "3. Re-run this script"
+                    rm -rf ${TEMP_DIR}
+                    return 1
+                fi
+            fi
+        fi
+    fi
+    
+    if [[ "$CLONE_SUCCESS" != "true" ]]; then
+        print_error "Repository cloning failed"
         rm -rf ${TEMP_DIR}
         return 1
     fi
+    
+    # Reset git configuration to avoid affecting other operations
+    git config --global --unset http.postBuffer 2>/dev/null || true
+    git config --global --unset http.maxRequestBuffer 2>/dev/null || true
+    git config --global --unset core.compression 2>/dev/null || true
     
     # Move into the cloned directory
     cd repo || {
@@ -188,12 +271,32 @@ setup_app_directory() {
         rm -rf ${TEMP_DIR}
         return 1
     }
+    
+    # Validate that we have the expected project structure
+    print_status "Validating repository contents..."
+    if [[ ! -f "package.json" ]]; then
+        print_error "Repository validation failed: package.json not found"
+        rm -rf ${TEMP_DIR}
+        return 1
+    fi
+    
+    if [[ ! -d "backend" ]] || [[ ! -d "frontend" ]]; then
+        print_error "Repository validation failed: backend or frontend directory missing"
+        rm -rf ${TEMP_DIR}
+        return 1
+    fi
+    
+    print_success "Repository contents validated successfully"
         
-        # Check git status and branch
-        print_status "Git status and branch information:"
-        git status || echo "Git status failed"
-        git branch -a || echo "Git branch failed"
-        git ls-files | head -20 || echo "Git ls-files failed"
+        # Check git status and branch (only if it's a git repository)
+        if [[ -d ".git" ]]; then
+            print_status "Git repository information:"
+            git status 2>/dev/null || echo "Git status not available"
+            git branch -a 2>/dev/null || echo "Git branch not available"
+            git ls-files | head -10 2>/dev/null || echo "Git ls-files not available"
+        else
+            print_status "Downloaded from ZIP archive (not a git repository)"
+        fi
         
         # List files in temp directory for debugging (including hidden)
         print_status "Files in temp directory:"

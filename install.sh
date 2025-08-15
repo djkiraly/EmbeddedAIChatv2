@@ -18,7 +18,7 @@ APP_DIR="/opt/${APP_NAME}"
 SERVICE_USER="aichat"
 FRONTEND_PORT=3000
 BACKEND_PORT=5000
-NODE_VERSION="18"
+NODE_VERSION="20"
 
 # Function to print colored output
 print_status() {
@@ -168,14 +168,14 @@ setup_app_directory() {
     TEMP_DIR=$(mktemp -d)
     print_status "Using temporary directory: ${TEMP_DIR}"
     
-    # Try cloning into a subdirectory first, then move contents
-    # First try the master branch explicitly
-    if cd ${TEMP_DIR} && git clone --branch master --single-branch https://github.com/djkiraly/embeddedAiAgent.git repo 2>/dev/null; then
-        print_status "Successfully cloned master branch"
-    elif cd ${TEMP_DIR} && git clone --branch main --single-branch https://github.com/djkiraly/embeddedAiAgent.git repo 2>/dev/null; then
-        print_status "Successfully cloned main branch (master failed)"
-    elif cd ${TEMP_DIR} && git clone https://github.com/djkiraly/embeddedAiAgent.git repo; then
-        print_status "Successfully cloned default branch (both master and main failed)"
+    # Clone the correct repository
+    # First try the main branch explicitly
+    if cd ${TEMP_DIR} && git clone --branch main --single-branch https://github.com/djkiraly/EmbeddedAIChatv2.git repo 2>/dev/null; then
+        print_status "Successfully cloned main branch"
+    elif cd ${TEMP_DIR} && git clone --branch master --single-branch https://github.com/djkiraly/EmbeddedAIChatv2.git repo 2>/dev/null; then
+        print_status "Successfully cloned master branch (main failed)"
+    elif cd ${TEMP_DIR} && git clone https://github.com/djkiraly/EmbeddedAIChatv2.git repo; then
+        print_status "Successfully cloned default branch (both main and master failed)"
     else
         print_error "All git clone attempts failed"
         rm -rf ${TEMP_DIR}
@@ -210,43 +210,33 @@ setup_app_directory() {
         # Clear the destination directory first to avoid conflicts
         sudo rm -rf ${APP_DIR}/* 2>/dev/null || true
         
-        # Method 1: Try cp with verbose output (from repo subdirectory)
-        print_status "Attempting copy method 1: cp -rv"
-        if sudo cp -rv * ${APP_DIR}/ 2>&1; then
-            print_status "Method 1 (cp) succeeded"
+        # Copy all files including hidden ones
+        print_status "Copying cloned files to ${APP_DIR}..."
+        if sudo cp -rv . ${APP_DIR}/ 2>&1; then
+            print_status "Files copied successfully"
             COPY_SUCCESS=true
         else
-            print_warning "Method 1 (cp) failed, trying method 2..."
-            COPY_SUCCESS=false
-            
-            # Method 2: Try rsync  
-            print_status "Attempting copy method 2: rsync"
+            # Fallback method using rsync if cp fails
+            print_status "Attempting fallback copy method: rsync"
             if command -v rsync >/dev/null 2>&1; then
                 if sudo rsync -av ./ ${APP_DIR}/ 2>&1; then
-                    print_status "Method 2 (rsync) succeeded"
+                    print_status "Rsync copy succeeded"
                     COPY_SUCCESS=true
                 else
-                    print_warning "Method 2 (rsync) failed, trying method 3..."
-                fi
-            else
-                print_warning "rsync not available, trying method 3..."
-            fi
-            
-            # Method 3: Manual copy with tar
-            if [[ "$COPY_SUCCESS" != "true" ]]; then
-                print_status "Attempting copy method 3: tar"
-                if sudo tar cf - . | (cd ${APP_DIR} && sudo tar xf -); then
-                    print_status "Method 3 (tar) succeeded"
-                    COPY_SUCCESS=true
-                else
-                    print_error "All copy methods failed"
+                    print_error "Rsync copy failed"
                     cd - > /dev/null
                     rm -rf ${TEMP_DIR}
                     return 1
                 fi
+            else
+                print_error "Copy failed and rsync not available"
+                cd - > /dev/null
+                rm -rf ${TEMP_DIR}
+                return 1
             fi
         fi
         
+        # Return to original directory and cleanup
         cd - > /dev/null
         rm -rf ${TEMP_DIR}
         
@@ -281,9 +271,6 @@ setup_app_directory() {
             print_error "Critical files/directories missing - copy failed"
             return 1
         fi
-        
-        cd - > /dev/null
-        rm -rf ${TEMP_DIR}
         
     # Set ownership
     sudo chown -R ${SERVICE_USER}:${SERVICE_USER} ${APP_DIR}
@@ -327,6 +314,7 @@ DATABASE_PATH=${APP_DIR}/data/database.sqlite
 
 # CORS Origins
 FRONTEND_URL=http://localhost:${FRONTEND_PORT}
+CORS_ORIGIN=http://localhost:${FRONTEND_PORT}
 
 # API Keys (Configure these after installation)
 # OPENAI_API_KEY=your_openai_api_key_here
@@ -344,6 +332,12 @@ REACT_APP_API_URL=http://localhost:${BACKEND_PORT}/api
 
 # Build Configuration
 GENERATE_SOURCEMAP=false
+EOF
+
+    # Also create .env.local for development compatibility
+    sudo -u ${SERVICE_USER} tee ${APP_DIR}/frontend/.env.local > /dev/null << EOF
+# API Configuration
+REACT_APP_API_URL=http://localhost:${BACKEND_PORT}/api
 EOF
     
     print_success "Environment configuration created"
@@ -444,8 +438,8 @@ server {
     }
     
     # Backend API
-    location /api {
-        proxy_pass http://localhost:${BACKEND_PORT};
+    location /api/ {
+        proxy_pass http://localhost:${BACKEND_PORT}/api/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -568,6 +562,8 @@ case "$1" in
     update)
         echo "Updating application..."
         cd ${APP_DIR}
+        sudo systemctl stop ai-chat-backend
+        sudo systemctl stop ai-chat-frontend
         sudo -u ${SERVICE_USER} git pull
         sudo -u ${SERVICE_USER} npm run install:all
         sudo -u ${SERVICE_USER} npm run build
@@ -621,7 +617,7 @@ start_services() {
     # Initialize database
     sudo -u ${SERVICE_USER} bash << EOF
         cd ${APP_DIR}/backend
-        node scripts/initDatabase.js
+        npm run init-db
 EOF
     
     # Start services

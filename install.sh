@@ -19,6 +19,7 @@ SERVICE_USER="aichat"
 FRONTEND_PORT=3000
 BACKEND_PORT=5000
 NODE_VERSION="20"
+WEB_DIR="/var/www/html"
 
 # Function to print colored output
 print_status() {
@@ -396,7 +397,30 @@ install_app_deps() {
         npm run build
 EOF
     
-    print_success "Application dependencies installed"
+    # Copy built frontend to nginx web directory
+    print_status "Deploying frontend to nginx web directory..."
+    
+    # Create web directory if it doesn't exist
+    sudo mkdir -p ${WEB_DIR}
+    
+    # Remove any existing content
+    sudo rm -rf ${WEB_DIR}/*
+    
+    # Copy built frontend files
+    if [[ -d "${APP_DIR}/frontend/build" ]]; then
+        sudo cp -r ${APP_DIR}/frontend/build/* ${WEB_DIR}/
+        print_success "Frontend deployed to ${WEB_DIR}"
+    else
+        print_error "Frontend build directory not found at ${APP_DIR}/frontend/build"
+        return 1
+    fi
+    
+    # Set proper ownership and permissions
+    sudo chown -R www-data:www-data ${WEB_DIR}
+    sudo chmod -R 755 ${WEB_DIR}
+    sudo find ${WEB_DIR} -type f -exec chmod 644 {} \;
+    
+    print_success "Application dependencies installed and frontend deployed"
 }
 
 # Function to create environment configuration
@@ -431,7 +455,7 @@ EOF
     # Create frontend .env file
     sudo -u ${SERVICE_USER} tee ${APP_DIR}/frontend/.env.production > /dev/null << EOF
 # API Configuration
-REACT_APP_API_URL=http://localhost:${BACKEND_PORT}/api
+REACT_APP_API_URL=http://localhost/api
 
 # Build Configuration
 GENERATE_SOURCEMAP=false
@@ -440,7 +464,7 @@ EOF
     # Also create .env.local for development compatibility
     sudo -u ${SERVICE_USER} tee ${APP_DIR}/frontend/.env.local > /dev/null << EOF
 # API Configuration
-REACT_APP_API_URL=http://localhost:${BACKEND_PORT}/api
+REACT_APP_API_URL=http://localhost/api
 EOF
     
     print_success "Environment configuration created"
@@ -478,43 +502,14 @@ ReadWritePaths=${APP_DIR}
 WantedBy=multi-user.target
 EOF
 
-    # Frontend service (using serve to serve the built React app)
-    sudo npm install -g serve
-    
-    sudo tee /etc/systemd/system/ai-chat-frontend.service > /dev/null << EOF
-[Unit]
-Description=AI Chat Interface Frontend
-After=network.target
-
-[Service]
-Type=simple
-User=${SERVICE_USER}
-WorkingDirectory=${APP_DIR}/frontend
-ExecStart=/usr/bin/npx serve -s build -l ${FRONTEND_PORT}
-Restart=always
-RestartSec=10
-Environment=NODE_ENV=production
-StandardOutput=append:${APP_DIR}/logs/frontend.log
-StandardError=append:${APP_DIR}/logs/frontend-error.log
-
-# Security settings
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=${APP_DIR}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
     # Reload systemd
     sudo systemctl daemon-reload
     
     # Enable services
     sudo systemctl enable ai-chat-backend.service
-    sudo systemctl enable ai-chat-frontend.service
     
-    print_success "Systemd services created and enabled"
+    print_success "Systemd service created and enabled"
+    print_status "Frontend is served directly by nginx from ${WEB_DIR}"
 }
 
 # Function to setup nginx reverse proxy
@@ -524,23 +519,32 @@ setup_nginx() {
     # Create nginx configuration
     sudo tee /etc/nginx/sites-available/ai-chat-interface > /dev/null << EOF
 server {
-    listen 80;
-    server_name localhost;
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name localhost _;
     
-    # Frontend
+    # Document root for static files
+    root ${WEB_DIR};
+    index index.html index.htm;
+    
+    # Frontend - serve static files directly
     location / {
-        proxy_pass http://localhost:${FRONTEND_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_cache_bypass \$http_upgrade;
+        try_files \$uri \$uri/ /index.html;
+        
+        # Cache static assets
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+        
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     }
     
-    # Backend API
+    # Backend API - proxy to Node.js server
     location /api/ {
         proxy_pass http://localhost:${BACKEND_PORT}/api/;
         proxy_http_version 1.1;
@@ -551,6 +555,23 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_cache_bypass \$http_upgrade;
+        
+        # CORS headers for API
+        add_header Access-Control-Allow-Origin "http://localhost" always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization" always;
+        add_header Access-Control-Expose-Headers "Content-Length,Content-Range" always;
+        
+        # Handle preflight requests
+        if (\$request_method = 'OPTIONS') {
+            add_header Access-Control-Allow-Origin "http://localhost";
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS";
+            add_header Access-Control-Allow-Headers "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization";
+            add_header Access-Control-Max-Age 1728000;
+            add_header Content-Type 'text/plain; charset=utf-8';
+            add_header Content-Length 0;
+            return 204;
+        }
     }
     
     # Logs
@@ -619,20 +640,17 @@ case "$1" in
     start)
         echo "Starting AI Chat Interface..."
         sudo systemctl start ai-chat-backend
-        sudo systemctl start ai-chat-frontend
         sudo systemctl start nginx
         echo "Services started"
         ;;
     stop)
         echo "Stopping AI Chat Interface..."
         sudo systemctl stop ai-chat-backend
-        sudo systemctl stop ai-chat-frontend
-        echo "Services stopped"
+        echo "Services stopped (nginx continues to serve static files)"
         ;;
     restart)
         echo "Restarting AI Chat Interface..."
         sudo systemctl restart ai-chat-backend
-        sudo systemctl restart ai-chat-frontend
         sudo systemctl restart nginx
         echo "Services restarted"
         ;;
@@ -641,24 +659,21 @@ case "$1" in
         echo "========================"
         echo -n "Backend: "
         sudo systemctl is-active ai-chat-backend
-        echo -n "Frontend: "
-        sudo systemctl is-active ai-chat-frontend
         echo -n "Nginx: "
         sudo systemctl is-active nginx
+        echo "Frontend: served directly by nginx from /var/www/html"
         ;;
     logs)
         case "$2" in
             backend)
                 sudo journalctl -u ai-chat-backend -f
                 ;;
-            frontend)
-                sudo journalctl -u ai-chat-frontend -f
-                ;;
             nginx)
                 sudo tail -f ${APP_DIR}/logs/nginx-*.log
                 ;;
             *)
-                echo "Usage: $0 logs {backend|frontend|nginx}"
+                echo "Usage: $0 logs {backend|nginx}"
+                echo "Note: Frontend is served statically by nginx (no separate logs)"
                 ;;
         esac
         ;;
@@ -666,24 +681,34 @@ case "$1" in
         echo "Updating application..."
         cd ${APP_DIR}
         sudo systemctl stop ai-chat-backend
-        sudo systemctl stop ai-chat-frontend
         sudo -u ${SERVICE_USER} git pull
         sudo -u ${SERVICE_USER} npm run install:all
         sudo -u ${SERVICE_USER} npm run build
+        
+        # Redeploy frontend to nginx web directory
+        echo "Redeploying frontend..."
+        sudo rm -rf /var/www/html/*
+        sudo cp -r ${APP_DIR}/frontend/build/* /var/www/html/
+        sudo chown -R www-data:www-data /var/www/html
+        sudo chmod -R 755 /var/www/html
+        sudo find /var/www/html -type f -exec chmod 644 {} \;
+        
         sudo systemctl restart ai-chat-backend
-        sudo systemctl restart ai-chat-frontend
-        echo "Application updated"
+        sudo systemctl restart nginx
+        echo "Application updated and redeployed"
         ;;
     *)
         echo "Usage: $0 {start|stop|restart|status|logs|update}"
         echo ""
         echo "Commands:"
-        echo "  start    - Start all services"
-        echo "  stop     - Stop all services"
-        echo "  restart  - Restart all services"
+        echo "  start    - Start backend and nginx services"
+        echo "  stop     - Stop backend service (nginx continues serving static files)"
+        echo "  restart  - Restart backend and nginx services"
         echo "  status   - Show service status"
-        echo "  logs     - View logs (backend|frontend|nginx)"
-        echo "  update   - Update application from git"
+        echo "  logs     - View logs (backend|nginx)"
+        echo "  update   - Update application from git and redeploy"
+        echo ""
+        echo "Note: Frontend is served directly by nginx from /var/www/html"
         exit 1
         ;;
 esac
@@ -726,14 +751,13 @@ EOF
     # Start services
     sudo systemctl start ai-chat-backend
     sleep 5
-    sudo systemctl start ai-chat-frontend
     
     # Check if services started successfully
-    if sudo systemctl is-active --quiet ai-chat-backend && \
-       sudo systemctl is-active --quiet ai-chat-frontend; then
-        print_success "All services started successfully"
+    if sudo systemctl is-active --quiet ai-chat-backend; then
+        print_success "Backend service started successfully"
+        print_status "Frontend is served directly by nginx"
     else
-        print_error "Some services failed to start"
+        print_error "Backend service failed to start"
         print_status "Check logs with: ai-chat-manager logs backend"
         return 1
     fi
@@ -748,15 +772,20 @@ print_summary() {
     print_status "Application URL: http://localhost (or your server IP)"
     print_status "Backend API: http://localhost/api"
     print_status "Application Directory: ${APP_DIR}"
+    print_status "Web Directory: ${WEB_DIR}"
     print_status "Service User: ${SERVICE_USER}"
     echo ""
+    print_status "Architecture:"
+    echo "  Frontend: Static files served by nginx from ${WEB_DIR}"
+    echo "  Backend: Node.js API server proxied through nginx"
+    echo ""
     print_status "Management Commands:"
-    echo "  ai-chat-manager start     - Start services"
-    echo "  ai-chat-manager stop      - Stop services"
-    echo "  ai-chat-manager restart   - Restart services"
+    echo "  ai-chat-manager start     - Start backend and nginx"
+    echo "  ai-chat-manager stop      - Stop backend (nginx continues)"
+    echo "  ai-chat-manager restart   - Restart backend and nginx"
     echo "  ai-chat-manager status    - Check status"
-    echo "  ai-chat-manager logs      - View logs"
-    echo "  ai-chat-manager update    - Update application"
+    echo "  ai-chat-manager logs      - View logs (backend|nginx)"
+    echo "  ai-chat-manager update    - Update and redeploy application"
     echo ""
     print_warning "IMPORTANT: Configure your API keys in ${APP_DIR}/backend/.env"
     echo ""

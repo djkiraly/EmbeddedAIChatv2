@@ -98,6 +98,19 @@ install_nodejs() {
             ;;
     esac
     
+    # Configure npm to avoid permission issues
+    print_status "Configuring npm permissions..."
+    sudo mkdir -p /usr/local/lib/node_modules
+    sudo chown -R root:staff /usr/local/lib/node_modules
+    sudo chmod -R 775 /usr/local/lib/node_modules
+    
+    # Set npm prefix to avoid permission conflicts
+    sudo npm config set prefix /usr/local --global
+    
+    # Fix npm permissions for the service user
+    sudo mkdir -p /home/${SERVICE_USER}/.npm
+    sudo chown -R ${SERVICE_USER}:${SERVICE_USER} /home/${SERVICE_USER}/.npm
+    
     print_success "Node.js installed: $(node --version)"
     print_success "npm installed: $(npm --version)"
 }
@@ -386,15 +399,55 @@ setup_app_directory() {
 install_app_deps() {
     print_status "Installing application dependencies..."
     
+    # Ensure service user has proper npm configuration
+    print_status "Setting up npm for service user..."
+    sudo -u ${SERVICE_USER} bash << 'EOF'
+        # Set up npm configuration for user
+        npm config set prefix ~/.npm-global
+        echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
+        echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.profile
+        source ~/.bashrc 2>/dev/null || true
+EOF
+    
     # Switch to service user and install dependencies
     sudo -u ${SERVICE_USER} bash << EOF
         cd ${APP_DIR}
         
+        # Set up PATH for this session
+        export PATH=~/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:\$PATH
+        export NODE_PATH=\$NODE_PATH:~/.npm-global/lib/node_modules
+        
         # Install all dependencies using the project's convenience script
-        npm run install:all
+        echo "Installing dependencies..."
+        if ! npm run install:all; then
+            echo "npm run install:all failed, trying individual installs..."
+            npm install || exit 1
+            cd frontend && npm install && cd ..
+            cd backend && npm install && cd ..
+        fi
+        
+        # Ensure node_modules/.bin has proper permissions
+        if [ -d "${APP_DIR}/frontend/node_modules/.bin" ]; then
+            chmod +x ${APP_DIR}/frontend/node_modules/.bin/*
+        fi
+        if [ -d "${APP_DIR}/backend/node_modules/.bin" ]; then
+            chmod +x ${APP_DIR}/backend/node_modules/.bin/*
+        fi
+        if [ -d "${APP_DIR}/node_modules/.bin" ]; then
+            chmod +x ${APP_DIR}/node_modules/.bin/*
+        fi
         
         # Build frontend for production
-        npm run build
+        echo "Building frontend..."
+        if ! npm run build; then
+            echo "npm run build failed, trying direct build..."
+            cd frontend
+            if ! npm run build; then
+                echo "Direct npm run build failed, trying npx..."
+                npx react-scripts build || exit 1
+            fi
+            cd ..
+        fi
 EOF
     
     # Copy built frontend to nginx web directory
@@ -682,8 +735,32 @@ case "$1" in
         cd ${APP_DIR}
         sudo systemctl stop ai-chat-backend
         sudo -u ${SERVICE_USER} git pull
-        sudo -u ${SERVICE_USER} npm run install:all
-        sudo -u ${SERVICE_USER} npm run build
+        
+        # Update with proper environment setup
+        sudo -u ${SERVICE_USER} bash << 'UPDATE_EOF'
+            export PATH=~/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:$PATH
+            export NODE_PATH=$NODE_PATH:~/.npm-global/lib/node_modules
+            
+            if ! npm run install:all; then
+                echo "npm run install:all failed, trying individual installs..."
+                npm install || exit 1
+                cd frontend && npm install && cd ..
+                cd backend && npm install && cd ..
+            fi
+            
+            # Fix permissions
+            find . -name "node_modules" -type d -exec chmod -R +x {}/\.bin \; 2>/dev/null || true
+            
+            if ! npm run build; then
+                echo "npm run build failed, trying direct build..."
+                cd frontend
+                if ! npm run build; then
+                    echo "Direct npm run build failed, trying npx..."
+                    npx react-scripts build || exit 1
+                fi
+                cd ..
+            fi
+UPDATE_EOF
         
         # Redeploy frontend to nginx web directory
         echo "Redeploying frontend..."

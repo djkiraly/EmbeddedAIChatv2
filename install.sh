@@ -19,6 +19,7 @@ SERVICE_USER="aichat"
 FRONTEND_PORT=3000
 BACKEND_PORT=5000
 NODE_VERSION="20"
+NPM_VERSION="11.5.2"
 WEB_DIR="/var/www/html"
 
 # Function to print colored output
@@ -106,6 +107,10 @@ install_nodejs() {
     
     # Set npm prefix to avoid permission conflicts
     sudo npm config set prefix /usr/local --global
+    
+    # Upgrade npm to specific version
+    print_status "Upgrading npm to version ${NPM_VERSION}..."
+    sudo npm install -g npm@${NPM_VERSION}
     
     print_success "Node.js installed: $(node --version)"
     print_success "npm installed: $(npm --version)"

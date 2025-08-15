@@ -19,15 +19,15 @@ A modern, full-stack AI chat application supporting multiple LLM providers (Open
 
 ```bash
 # Clone the repository
-git clone https://github.com/djkiraly/embeddedAiAgent.git
-cd embeddedAiAgent
+git clone https://github.com/djkiraly/EmbeddedAIChatv2.git
+cd EmbeddedAIChatv2
 
 # Install all dependencies
 npm run install:all
 
-# Configure API keys
-cp backend/.env.example backend/.env
+# Configure API keys (create .env file from template)
 # Edit backend/.env and add your API keys
+nano backend/.env
 
 # Start development servers
 npm start
@@ -39,17 +39,27 @@ Visit `http://localhost:3000` to access the application.
 
 For production deployment on Linux servers, use our automated installation scripts:
 
+**Supported Distributions:**
+- Ubuntu 18.04+ / Debian 9+
+- CentOS 7+ / RHEL 7+ / Fedora 30+
+- Other systemd-based distributions
+
+**Prerequisites:**
+- User with sudo privileges (do NOT run as root)
+- Internet connection for package downloads
+- 2GB+ RAM and 10GB+ disk space recommended
+
 #### One-Line Installation
 ```bash
 # Download and run the installation script
-curl -fsSL https://raw.githubusercontent.com/djkiraly/embeddedAiAgent/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/djkiraly/EmbeddedAIChatv2/main/install.sh | bash
 ```
 
 #### Manual Installation
 ```bash
 # Clone the repository
-git clone https://github.com/djkiraly/embeddedAiAgent.git
-cd embeddedAiAgent
+git clone https://github.com/djkiraly/EmbeddedAIChatv2.git
+cd EmbeddedAIChatv2
 
 # Make scripts executable
 chmod +x install.sh uninstall.sh update.sh
@@ -59,7 +69,7 @@ chmod +x install.sh uninstall.sh update.sh
 ```
 
 **What gets installed:**
-- ✅ Node.js 18+ and all system dependencies
+- ✅ Node.js 20+ and all system dependencies
 - ✅ Complete application with production build
 - ✅ Systemd services for auto-start and management
 - ✅ Nginx reverse proxy configuration
@@ -70,28 +80,42 @@ chmod +x install.sh uninstall.sh update.sh
 
 **Post-installation:**
 ```bash
-# Configure API keys
+# 1. Configure API keys (REQUIRED)
 sudo -u aichat nano /opt/ai-chat-interface/backend/.env
+# Add your OPENAI_API_KEY and/or ANTHROPIC_API_KEY
 
-# Restart services
+# 2. Restart services to apply configuration
 ai-chat-manager restart
 
-# Check status
+# 3. Check service status
 ai-chat-manager status
+
+# 4. Access the application
+# Open http://your-server-ip in your browser
 ```
 
 **Management commands:**
-- `ai-chat-manager start/stop/restart` - Service control
+- `ai-chat-manager start` - Start all services
+- `ai-chat-manager stop` - Stop all services  
+- `ai-chat-manager restart` - Restart all services
 - `ai-chat-manager status` - Check service status
-- `ai-chat-manager logs backend/frontend/nginx` - View logs
-- `ai-chat-manager update` - Update application
+- `ai-chat-manager logs backend` - View backend logs
+- `ai-chat-manager logs frontend` - View frontend logs
+- `ai-chat-manager logs nginx` - View nginx logs
+- `ai-chat-manager update` - Update application from git
+
+**Service files:**
+- Backend: `/etc/systemd/system/ai-chat-backend.service`
+- Frontend: `/etc/systemd/system/ai-chat-frontend.service`
+- Config: `/opt/ai-chat-interface/backend/.env`
+- Logs: `/opt/ai-chat-interface/logs/`
 
 **Complete deployment documentation:** See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed Linux deployment guide, troubleshooting, and advanced configuration.
 
 ## 📋 Requirements
 
 ### Development
-- Node.js 18+ and npm
+- Node.js 20+ and npm
 - Git
 
 ### Production (Linux)
@@ -158,21 +182,32 @@ ai-chat-manager update              # Update application
 
 **Backend** (`.env`):
 ```env
+# Environment
 NODE_ENV=development
+
+# Server Configuration
 PORT=5000
+HOST=0.0.0.0
+
+# Database
 DATABASE_PATH=./database.sqlite
 
-# API Keys
+# API Keys (Required)
 OPENAI_API_KEY=your_openai_key_here
 ANTHROPIC_API_KEY=your_anthropic_key_here
 
-# Optional
+# CORS Origins
 FRONTEND_URL=http://localhost:3000
+CORS_ORIGIN=http://localhost:3000
+
+# Logging
 LOG_LEVEL=info
+LOG_FILE=./logs/backend.log
 ```
 
-**Frontend** (`.env`):
+**Frontend** (`.env.local`):
 ```env
+# API Configuration
 REACT_APP_API_URL=http://localhost:5000/api
 ```
 
@@ -237,9 +272,15 @@ kill -9 <PID>
 
 **Database issues:**
 ```bash
-# Reset database
+# Reset database (development)
 rm backend/database.sqlite
-npm run backend:dev  # Recreates database
+cd backend && npm run init-db
+
+# Reset database (production)
+sudo systemctl stop ai-chat-backend
+sudo rm /opt/ai-chat-interface/data/database.sqlite
+sudo -u aichat bash -c "cd /opt/ai-chat-interface/backend && npm run init-db"
+sudo systemctl start ai-chat-backend
 ```
 
 **API key issues:**

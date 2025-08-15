@@ -577,6 +577,14 @@ EOF
 setup_nginx() {
     print_status "Setting up Nginx reverse proxy..."
     
+    # Ensure logs directory exists for nginx configuration
+    sudo mkdir -p ${APP_DIR}/logs
+    sudo touch ${APP_DIR}/logs/nginx-access.log
+    sudo touch ${APP_DIR}/logs/nginx-error.log
+    sudo chown -R www-data:www-data ${APP_DIR}/logs
+    sudo chmod 755 ${APP_DIR}/logs
+    sudo chmod 644 ${APP_DIR}/logs/nginx-*.log
+    
     # Create nginx configuration
     sudo tee /etc/nginx/sites-available/ai-chat-interface > /dev/null << EOF
 server {

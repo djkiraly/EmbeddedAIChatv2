@@ -107,10 +107,6 @@ install_nodejs() {
     # Set npm prefix to avoid permission conflicts
     sudo npm config set prefix /usr/local --global
     
-    # Fix npm permissions for the service user
-    sudo mkdir -p /home/${SERVICE_USER}/.npm
-    sudo chown -R ${SERVICE_USER}:${SERVICE_USER} /home/${SERVICE_USER}/.npm
-    
     print_success "Node.js installed: $(node --version)"
     print_success "npm installed: $(npm --version)"
 }
@@ -146,6 +142,13 @@ create_service_user() {
                     --create-home --comment "AI Chat Service User" ${SERVICE_USER}
         print_success "Created user: ${SERVICE_USER}"
     fi
+    
+    # Configure npm for the service user
+    print_status "Configuring npm for service user..."
+    sudo mkdir -p /home/${SERVICE_USER}/.npm
+    sudo chown -R ${SERVICE_USER}:${SERVICE_USER} /home/${SERVICE_USER}/.npm
+    
+    print_success "Service user configured"
 }
 
 # Function to setup application directory

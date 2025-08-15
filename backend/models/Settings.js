@@ -1,4 +1,4 @@
-const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 
 class Settings {
   constructor(db) {
@@ -140,23 +140,59 @@ class Settings {
     });
   }
 
-  // API Key management with simple encryption
+  // Generate encryption key from environment or use default (should be set in production)
+  getEncryptionKey() {
+    const key = process.env.ENCRYPTION_KEY || 'default-key-change-in-production-32-chars';
+    return crypto.createHash('sha256').update(key).digest();
+  }
+
+  // Encrypt API key using AES-256-CBC
+  encryptApiKey(apiKey) {
+    const algorithm = 'aes-256-cbc';
+    const key = this.getEncryptionKey();
+    const iv = crypto.randomBytes(16);
+    
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    let encrypted = cipher.update(apiKey, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    return iv.toString('hex') + ':' + encrypted;
+  }
+
+  // Decrypt API key
+  decryptApiKey(encryptedData) {
+    const algorithm = 'aes-256-cbc';
+    const key = this.getEncryptionKey();
+    const [ivHex, encrypted] = encryptedData.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    
+    const decipher = crypto.createDecipheriv(algorithm, key, iv);
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  }
+
+  // API Key management with AES-256 encryption
   setApiKey(provider, apiKey) {
     return new Promise((resolve, reject) => {
-      // Simple encryption using base64 encoding (in production, use proper encryption)
-      const encodedKey = Buffer.from(apiKey).toString('base64');
-      const sql = `
-        INSERT OR REPLACE INTO api_keys (provider, key_hash, updated_at) 
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-      `;
-      
-      this.db.run(sql, [provider, encodedKey], function(err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve({ provider, set: true });
-        }
-      });
+      try {
+        const encryptedKey = this.encryptApiKey(apiKey);
+        const sql = `
+          INSERT OR REPLACE INTO api_keys (provider, key_hash, updated_at) 
+          VALUES (?, ?, CURRENT_TIMESTAMP)
+        `;
+        
+        this.db.run(sql, [provider, encryptedKey], function(err) {
+          if (err) {
+            reject(err);
+          } else {
+            resolve({ provider, set: true });
+          }
+        });
+      } catch (error) {
+        reject(new Error('Failed to encrypt API key: ' + error.message));
+      }
     });
   }
 
@@ -217,28 +253,23 @@ class Settings {
       // First try to get from database
       const sql = 'SELECT key_hash FROM api_keys WHERE provider = ?';
       
-      console.log(`Getting API key for provider: ${provider}`);
-      
       this.db.get(sql, [provider], (err, row) => {
         if (err) {
-          console.error(`Database error getting API key for ${provider}:`, err);
           reject(err);
           return;
         }
         
         if (row && row.key_hash) {
-          // Decrypt the stored key (simple base64 decoding)
+          // Decrypt the stored key using AES-256
           try {
-            const decodedKey = Buffer.from(row.key_hash, 'base64').toString('utf-8');
-            console.log(`Found stored API key for ${provider}: ${decodedKey.substring(0, 8)}...`);
-            resolve(decodedKey);
+            const decryptedKey = this.decryptApiKey(row.key_hash);
+            resolve(decryptedKey);
           } catch (decodeError) {
-            console.error('Error decoding API key:', decodeError);
+            // Log error without exposing sensitive details
             // Fallback to environment variables
             this.getEnvApiKey(provider, resolve);
           }
         } else {
-          console.log(`No stored API key found for ${provider}, checking environment variables`);
           // Fallback to environment variables if no stored key
           this.getEnvApiKey(provider, resolve);
         }
@@ -254,8 +285,6 @@ class Settings {
     };
     
     const envKey = envKeys[provider] || null;
-    console.log(`Environment API key for ${provider}: ${envKey ? envKey.substring(0, 8) + '...' : 'NOT SET'}`);
-    
     resolve(envKey);
   }
 }

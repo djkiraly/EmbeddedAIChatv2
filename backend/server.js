@@ -3,6 +3,47 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+// Import logger
+const logger = require('./config/logger');
+
+// Environment variable validation
+function validateEnvironment() {
+  const requiredVars = [];
+  const recommendedVars = [
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY', 
+    'ENCRYPTION_KEY',
+    'NODE_ENV'
+  ];
+  
+  const missingRequired = requiredVars.filter(varName => !process.env[varName]);
+  const missingRecommended = recommendedVars.filter(varName => !process.env[varName]);
+  
+  if (missingRequired.length > 0) {
+    logger.error('Missing required environment variables:', missingRequired);
+    process.exit(1);
+  }
+  
+  if (missingRecommended.length > 0) {
+    logger.warn('Missing recommended environment variables:', missingRecommended);
+    logger.warn('Application may have limited functionality without these variables');
+  }
+  
+  // Validate encryption key strength
+  if (process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_KEY.length < 32) {
+    logger.warn('ENCRYPTION_KEY should be at least 32 characters for better security');
+  }
+  
+  if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY === 'default-key-change-in-production-32-chars') {
+    logger.warn('Using default encryption key. Set ENCRYPTION_KEY environment variable for production');
+  }
+  
+  logger.info('Environment validation completed');
+}
+
+// Validate environment on startup
+validateEnvironment();
+
 // Import database and models
 const Database = require('./config/database');
 const Session = require('./models/Session');
@@ -114,7 +155,7 @@ app.use('*', (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  logger.error('Unhandled error:', err.message, { stack: err.stack });
   
   res.status(err.status || 500).json({
     error: process.env.NODE_ENV === 'production' 
@@ -126,13 +167,13 @@ app.use((err, req, res, next) => {
 
 // Graceful shutdown
 const gracefulShutdown = async () => {
-  console.log('Shutting down gracefully...');
+  logger.info('Shutting down gracefully...');
   
   try {
     await database.close();
-    console.log('Database connection closed.');
+    logger.info('Database connection closed.');
   } catch (error) {
-    console.error('Error closing database:', error);
+    logger.error('Error closing database:', error.message);
   }
   
   process.exit(0);
@@ -143,11 +184,11 @@ process.on('SIGINT', gracefulShutdown);
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 AI Chat Interface API running on port ${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`📖 API info: http://localhost:${PORT}/api`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`💾 Database: ${process.env.DATABASE_PATH || './database.sqlite'}`);
+  logger.info(`AI Chat Interface API running on port ${PORT}`);
+  logger.info(`Health check: http://localhost:${PORT}/health`);
+  logger.info(`API info: http://localhost:${PORT}/api`);
+  logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  logger.info(`Database: ${process.env.DATABASE_PATH || './database.sqlite'}`);
 });
 
 module.exports = app; 

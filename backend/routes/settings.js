@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const { validate, validateParams, sanitize, schemas } = require('../middleware/validation');
+const logger = require('../config/logger');
 
 // Get all settings
 router.get('/settings', async (req, res) => {
@@ -14,7 +16,7 @@ router.get('/settings', async (req, res) => {
       apiKeys
     });
   } catch (error) {
-    console.error('Get settings error:', error);
+    logger.error('Get settings error:', error.message);
     res.status(500).json({ error: 'Failed to get settings' });
   }
 });

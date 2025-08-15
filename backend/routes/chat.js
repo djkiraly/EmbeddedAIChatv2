@@ -1,22 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const LLMService = require('../services/llmService');
+const { validate, validateParams, sanitize, schemas } = require('../middleware/validation');
+const logger = require('../config/logger');
 
 // Initialize services
 const llmService = new LLMService();
 
-// Chat endpoint
-router.post('/chat', async (req, res) => {
+// Chat endpoint with validation
+router.post('/chat', sanitize, validate(schemas.chatMessage), async (req, res) => {
   try {
-    const { message, model, sessionId } = req.body;
-    
-    if (!message || !message.trim()) {
-      return res.status(400).json({ error: 'Message is required' });
-    }
-
-    if (!model || !llmService.validateModel(model)) {
-      return res.status(400).json({ error: 'Valid model is required' });
-    }
+    const { message, model, sessionId, temperature, maxTokens } = req.body;
 
     const db = req.app.locals.database.getDatabase();
     const Session = req.app.locals.models.Session;

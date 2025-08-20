@@ -34,6 +34,12 @@ class LLMService {
         model: 'dall-e-2',
         type: 'image'
       },
+      'gpt-image-1': {
+        provider: 'openai',
+        endpoint: 'https://api.openai.com/v1/images/generations',
+        model: 'gpt-image-1',
+        type: 'image'
+      },
       'claude-3-sonnet': {
         provider: 'anthropic',
         endpoint: 'https://api.anthropic.com/v1/messages',
@@ -92,15 +98,30 @@ class LLMService {
       throw new Error(`Invalid image model: ${model}`);
     }
 
-    // DALL-E specific settings
+    // All image models use images/generations format
     const payload = {
       model: modelConfig.model,
       prompt: prompt,
       n: 1, // Number of images to generate
-      size: settings.image_size || (model === 'dall-e-3' ? '1024x1024' : '512x512'),
-      quality: model === 'dall-e-3' ? (settings.image_quality || 'standard') : undefined,
-      style: model === 'dall-e-3' ? (settings.image_style || 'natural') : undefined
+      size: settings.image_size || '1024x1024'
     };
+
+    // Add model-specific parameters
+    if (model === 'dall-e-3') {
+      payload.quality = settings.image_quality || 'standard';
+      payload.style = settings.image_style || 'natural';
+    } else if (model === 'gpt-image-1') {
+      // GPT-Image-1 quality values: 'low', 'medium', 'high'
+      const gptImageQuality = settings.image_quality || 'high';
+      const qualityMap = {
+        'standard': 'medium',
+        'hd': 'high',
+        'low': 'low',
+        'medium': 'medium',
+        'high': 'high'
+      };
+      payload.quality = qualityMap[gptImageQuality] || 'high';
+    }
 
     // Remove undefined values
     Object.keys(payload).forEach(key => 
@@ -113,21 +134,61 @@ class LLMService {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        timeout: 60000 // Increased timeout for image generation
+        timeout: model === 'gpt-image-1' ? 300000 : 60000 // GPT-Image-1 needs 5-minute timeout
       });
 
-      const imageData = response.data.data[0];
+      // Log basic response info (without full base64 data)
+      console.log('OpenAI Image API Response received:', {
+        created: response.data.created,
+        dataCount: response.data.data?.length,
+        hasUrl: !!response.data.data?.[0]?.url,
+        hasB64: !!response.data.data?.[0]?.b64_json
+      });
+      
+      // Handle standard images/generations response format
+      const imageData = response.data.data?.[0];
+      let imageUrl = imageData?.url;
+      const revisedPrompt = imageData?.revised_prompt || null;
+      
+      // GPT-Image-1 might return base64 data instead of URL
+      if (!imageUrl && imageData?.b64_json) {
+        // Convert base64 to data URL for display
+        imageUrl = `data:image/png;base64,${imageData.b64_json}`;
+      }
+      
+      // Ensure we always have content (image URL) - required for database
+      if (!imageUrl) {
+        console.error('Invalid image response structure:', {
+          model: model,
+          fullResponse: response.data,
+          availableFields: Object.keys(response.data || {})
+        });
+        throw new Error('No image URL found in API response');
+      }
       
       return {
-        content: imageData.url,
+        content: imageUrl,
         type: 'image',
         model: model,
         prompt: prompt,
-        revised_prompt: imageData.revised_prompt, // DALL-E 3 provides this
+        revised_prompt: revisedPrompt,
         provider: 'openai'
       };
     } catch (error) {
-      console.error('OpenAI Image Generation Error:', error.response?.data || error.message);
+      console.error('OpenAI Image Generation Error Details:', {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message,
+        model: model,
+        endpoint: modelConfig.endpoint
+      });
+      
+      // If it's a response structure issue, provide more context
+      if (error.message.includes('No image URL found')) {
+        throw new Error(`Image generation failed for ${model}: Response structure issue - check logs for details`);
+      }
+      
       throw new Error(`Image generation failed: ${error.response?.data?.error?.message || error.message}`);
     }
   }
@@ -233,6 +294,7 @@ class LLMService {
       'gpt-4-turbo-preview': 'GPT-4 Turbo',
       'dall-e-3': 'DALL-E 3',
       'dall-e-2': 'DALL-E 2',
+      'gpt-image-1': 'GPT-Image-1',
       'claude-3-sonnet': 'Claude 3 Sonnet',
       'claude-3-opus': 'Claude 3 Opus',
       'claude-3-haiku': 'Claude 3 Haiku'

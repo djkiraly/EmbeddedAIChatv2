@@ -55,7 +55,14 @@ api.interceptors.response.use(
 export const chatService = {
   // Send message to AI
   sendMessage: async (data) => {
-    return await api.post('/chat', data);
+    // Use longer timeout for image models
+    const isImageModel = data.model && (
+      data.model.includes('dall-e') || 
+      data.model.includes('gpt-image')
+    );
+    const timeout = isImageModel ? 300000 : 30000; // 5 minutes for images, 30 seconds for text
+    
+    return await api.post('/chat', data, { timeout });
   },
 
   // Get available models

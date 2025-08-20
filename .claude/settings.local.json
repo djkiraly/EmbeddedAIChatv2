@@ -9,7 +9,12 @@
       "Bash(node:*)",
       "Bash(taskkill:*)",
       "Bash(powershell:*)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "WebFetch(domain:platform.openai.com)",
+      "Bash(npm test)",
+      "Bash(npm run:*)",
+      "WebFetch(domain:help.openai.com)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": [],
